@@ -1,5 +1,3 @@
-import random
-
 print('roboforex v1.0 trading strategy generator (aka roboforex optimizer)')
 print('Made by Jessie Lesbian')
 print('Email: jessielesbian@protonmail.com Reddit: https://www.reddit.com/u/jessielesbian')
@@ -125,12 +123,47 @@ if len(sys.argv) >= 3:
     optimal_stop_loss = stop_loss_ratio_profits.index(profitability) + 1
     print('Optimal stop loss ratio is: ' + str(optimal_stop_loss) + '% (trailing stop loss)')
     profitability = math.floor((profitability / buy_signals_count) * 100)
+    print('Finding optimal take profit level...')
+    take_profit = 1
+    max_take_profit = profitability + optimal_stop_loss
+    take_profit_ratio_profits = []
+    inv_stop_loss = 100 - optimal_stop_loss
+    max_profit_take_profit = 0
+    while take_profit < max_take_profit:
+        print('trying a take profit ratio of ' + str(take_profit) + '%')
+        profit = 0
+        for index in buy_signals:
+            purchase_price = candlesticks[index][close_offset]
+            take_profit_level = (purchase_price / 100) * (100 + take_profit)
+            stop_loss_price = (purchase_price * inv_stop_loss) / 100
+            last_candlestick = candlesticks_count - 1
+            buy_signal = index
+            while index < candlesticks_count:
+                price = candlesticks[index][close_offset]
+                if (price < stop_loss_price) | (index == last_candlestick) | (price > take_profit_level):
+                    profit += (1 / purchase_price) * (price - purchase_price)
+                    break
+                stop_loss_price = max(stop_loss_price, (price * inv_stop_loss) / 100)
+                index += 1
+        take_profit_ratio_profits.append(profit)
+        take_profit += 1
+        if max_profit_take_profit < profit:
+            max_profit_take_profit = profit
+            if take_profit == max_take_profit:
+                max_take_profit += 1
+    profitability = max(take_profit_ratio_profits)
+    optimal_take_profit = take_profit_ratio_profits.index(profitability) + 1
+    profitability = math.floor((profitability / buy_signals_count) * 100)
+    print('Optimal take profit ratio is: ' + str(optimal_take_profit) + '%')
     print('Average profit per trade: ' + str(profitability) + '% in ' + str(buy_signals_count) + ' buy-sell cycles')
     print('saving trading strategy...')
     handle = open(outputfile, 'w')
     handle.write('\'Trailing stop loss allows roboforex to know when to sell the security\'\n')
     handle.write('\'https://www.investopedia.com/terms/t/trailingstop.asp\'\n')
     handle.write('optimal_stop_loss = ' + str(optimal_stop_loss) + '\n')
+    handle.write('\'Take profit allows roboforex to know when to sell the security\'\n')
+    handle.write('\'https://www.investopedia.com/terms/t/take-profitorder.asp\'\n')
+    handle.write('optimal_take_profit = ' + str(optimal_take_profit) + '\n')
 else:
     print('usage: py roboforex-optimize.py [input file] [output file] [extra options]')
     print('example: py roboforex-optimize.py Binance_BTCUSDT_1h.csv bitcoin.py --reverse')
