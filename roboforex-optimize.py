@@ -5,6 +5,7 @@ print('Jessie Lesbian will NOT be responsible for any losses incurred by robofor
 print('\ninitializing...')
 import sys
 import math
+import libroboforex as roboforex
 if len(sys.argv) >= 3:
     inputfile = sys.argv[1]
     outputfile = sys.argv[2]
@@ -12,6 +13,13 @@ if len(sys.argv) >= 3:
     soft_max_stop_loss = 99
     if '--soft-max-stop-loss' in sys.argv:
         soft_max_stop_loss = min(99, int(sys.argv[sys.argv.index('--soft-max-stop-loss') + 1]))
+    time_limit = 0
+    if '--time-limit' in sys.argv:
+        time_limit = int(sys.argv[sys.argv.index('--time-limit') + 1])
+    sma_slow = time_limit * 2
+    if '--sma-slow' in sys.argv:
+        sma_slow = int(sys.argv[sys.argv.index('--sma-slow') + 1])
+    sma_fast = sma_slow / 4
     print('opening CSV file...')
     handle = open(inputfile, 'r')
     firstline = ''
@@ -29,17 +37,30 @@ if len(sys.argv) >= 3:
     high_offset = firstline.index('high')
     low_offset = firstline.index('low')
     close_offset = firstline.index('close')
-
+    volume_offset = -1
+    if '--volume' in sys.argv:
+        volume_offset = firstline.index('volume')
     print('loading candlesticks...')
     handle.flush()
     candlesticks = []
     for line in handle:
-        line = line.rstrip().split(',')
-        candlesticks.append((float(line[open_offset]), float(line[high_offset]), float(line[low_offset]), float(line[close_offset])))
+        try:
+            line.index('null')
+            continue
+        except:
+            line = line.rstrip().split(',')
+            tup = (float(line[open_offset]), float(line[high_offset]), float(line[low_offset]), float(line[close_offset]))
+            volume = 1
+            if volume_offset >= 0:
+                tup = (*tup, float(line[volume_offset]))
+            if volume > 0:
+                candlesticks.append(tup)
     open_offset = 0
     high_offset = 1
     low_offset = 2
     close_offset = 3
+    if volume_offset >= 0:
+        volume_offset = 4
     candlesticks_count = len(candlesticks)
     print('Loaded ' + str(candlesticks_count) + ' candlesticks!')
     print('closing CSV file...')
@@ -49,72 +70,53 @@ if len(sys.argv) >= 3:
         candlesticks.reverse()
     print('Calculating support and resistance levels...')
     buy_signals = []
-    sell_signals = []
-    buy_signal_status = []
-    sell_signal_status = []
     support = candlesticks[0][low_offset]
     resistance = candlesticks[0][high_offset]
     uptrend = candlesticks[1][high_offset] > resistance
-    trends = []
     index = 0
     while index < candlesticks_count:
-        index = len(trends)
         low = candlesticks[index][low_offset]
         high = candlesticks[index][high_offset]
         buy = False
         sell = False
         if uptrend:
             if low < support:
-                sell_signals.append(index)
                 uptrend = False
                 resistance = support
                 support = low
-                sell = True
             elif high > resistance:
-                buy_signals.append(index)
                 support = resistance
                 resistance = high
-                buy = True
         else:
             if low < support:
-                sell_signals.append(index)
                 resistance = support
                 support = low
-                sell = True
             elif high > resistance:
-                buy_signals.append(index)
                 uptrend = True
                 support = resistance
                 resistance = high
-                buy = True
-        buy_signal_status.append(buy)
-        sell_signal_status.append(sell)
-        trends.append((float(support), float(resistance), uptrend))
+                if sma_slow == 0:
+                    buy_signals.append(index)
+                else:
+                    matype = roboforex.SimpleMovingAverage
+                    if volume_offset == 4:
+                        matype = roboforex.VolumeWeightedMovingAverage
+                    if matype(sma_fast, index, candlesticks) > matype(sma_slow, index, candlesticks):
+                        buy_signals.append(index)
         index += 1
     buy_signals_count = len(buy_signals)
-    sell_signals_count = len(sell_signals)
     print('found ' + str(buy_signals_count) + ' buy signals!')
-    print('found ' + str(sell_signals_count) + ' sell signals!')
     print('finding optimal trailing stop loss level...')
     stop_loss_ratio_profits = []
     stop_loss_ratio = 0
+    last_candlestick = candlesticks_count - 1
     while stop_loss_ratio < soft_max_stop_loss:
         stop_loss_ratio += 1
         print('trying a stop loss ratio of ' + str(stop_loss_ratio) + '%')
         inv_stop_loss = (100 - stop_loss_ratio)
         profit = 0
         for index in buy_signals:
-            purchase_price = candlesticks[index][close_offset]
-            stop_loss_price = (purchase_price * inv_stop_loss) / 100
-            last_candlestick = candlesticks_count - 1
-            buy_signal = index
-            while index < candlesticks_count:
-                price = candlesticks[index][close_offset]
-                if (price < stop_loss_price) | (index == last_candlestick):
-                    profit += (1 / purchase_price) * (price - purchase_price)
-                    break
-                stop_loss_price = max(stop_loss_price, (price * inv_stop_loss) / 100)
-                index += 1
+            profit += roboforex.simulateEntry(candlesticks, 65536000, stop_loss_ratio, last_candlestick, time_limit, index)
         if stop_loss_ratio != 1:
             if (float(profit) > max(stop_loss_ratio_profits)) & (float(stop_loss_ratio) == soft_max_stop_loss):
                 soft_max_stop_loss = min(99, soft_max_stop_loss + 1)
@@ -123,28 +125,17 @@ if len(sys.argv) >= 3:
     optimal_stop_loss = stop_loss_ratio_profits.index(profitability) + 1
     print('Optimal stop loss ratio is: ' + str(optimal_stop_loss) + '% (trailing stop loss)')
     profitability = math.floor((profitability / buy_signals_count) * 100)
+    inv_stop_loss = 100 - optimal_stop_loss
     print('Finding optimal take profit level...')
     take_profit = 1
     max_take_profit = profitability + optimal_stop_loss
     take_profit_ratio_profits = []
-    inv_stop_loss = 100 - optimal_stop_loss
     max_profit_take_profit = 0
     while take_profit < max_take_profit:
         print('trying a take profit ratio of ' + str(take_profit) + '%')
         profit = 0
         for index in buy_signals:
-            purchase_price = candlesticks[index][close_offset]
-            take_profit_level = (purchase_price / 100) * (100 + take_profit)
-            stop_loss_price = (purchase_price * inv_stop_loss) / 100
-            last_candlestick = candlesticks_count - 1
-            buy_signal = index
-            while index < candlesticks_count:
-                price = candlesticks[index][close_offset]
-                if (price < stop_loss_price) | (index == last_candlestick) | (price > take_profit_level):
-                    profit += (1 / purchase_price) * (price - purchase_price)
-                    break
-                stop_loss_price = max(stop_loss_price, (price * inv_stop_loss) / 100)
-                index += 1
+            profit += roboforex.simulateEntry(candlesticks, take_profit, optimal_stop_loss, last_candlestick, time_limit, index)
         take_profit_ratio_profits.append(profit)
         take_profit += 1
         if max_profit_take_profit < profit:
@@ -153,9 +144,8 @@ if len(sys.argv) >= 3:
                 max_take_profit += 1
     profitability = max(take_profit_ratio_profits)
     optimal_take_profit = take_profit_ratio_profits.index(profitability) + 1
-    profitability = math.floor((profitability / buy_signals_count) * 100)
     print('Optimal take profit ratio is: ' + str(optimal_take_profit) + '%')
-    print('Average profit per trade: ' + str(profitability) + '% in ' + str(buy_signals_count) + ' buy-sell cycles')
+    print('Average profit per trade: ' + str(int(math.floor((100.0 * profitability) / buy_signals_count))) + '% in ' + str(buy_signals_count) + ' buy-sell cycles')
     print('saving trading strategy...')
     handle = open(outputfile, 'w')
     handle.write('\'Trailing stop loss allows roboforex to know when to sell the security\'\n')
