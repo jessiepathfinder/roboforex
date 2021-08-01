@@ -72,5 +72,4 @@ def simulateEntry(candlesticks, take_profit, stop_loss, last_candlestick, time_l
             return (1 / purchase_price) * (price - purchase_price)
         else:
             stop_loss_price = max(stop_loss_price, (price * inv_stop_loss) / 100)
-            take_profit_level = (price / 100) * (100 + take_profit)
             index += 1
