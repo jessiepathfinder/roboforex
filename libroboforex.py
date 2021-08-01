@@ -1,5 +1,32 @@
 import sys
 import math
+def DonchainResistance(period, offset, candlesticks):
+    index = int(math.ceil(offset - period))
+    limit = int(math.ceil(index + period))
+    size = len(candlesticks)
+    resistance = 0.0
+    while index < limit:
+        if index >= 0 & index < size:
+            resistance = max(candlesticks[index][1], resistance)
+        index += 1
+    return resistance
+
+def DonchainSupport(period, offset, candlesticks):
+    index = int(math.ceil(offset - period))
+    limit = int(math.ceil(index + period))
+    size = len(candlesticks)
+    support = 0.0
+    while index < limit:
+        if index >= 0 & index < size:
+            support = min(candlesticks[index][2], support)
+        index += 1
+    return support
+
+def DonchainChannel(period, offset, candlesticks):
+    support = DonchainSupport(period, offset, candlesticks)
+    resistance = DonchainResistance(period, offset, candlesticks)
+    return (support, (support + resistance) / 2, resistance)
+
 def SimpleMovingAverage(period, offset, candlesticks):
     index = int(math.ceil(offset - period))
     limit = int(math.ceil(index + period))
