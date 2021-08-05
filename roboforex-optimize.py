@@ -6,13 +6,16 @@ print('\ninitializing...')
 import sys
 import math
 import libroboforex as roboforex
+import bisect
+import random
 if len(sys.argv) >= 3:
     inputfile = sys.argv[1]
     outputfile = sys.argv[2]
     reverse = '--reverse' in sys.argv
-    soft_max_stop_loss = 99
-    if '--soft-max-stop-loss' in sys.argv:
-        soft_max_stop_loss = min(99, int(sys.argv[sys.argv.index('--soft-max-stop-loss') + 1]))
+    probe_rounds = 256
+    max_stop_loss = 99
+    if '--max-stop-loss' in sys.argv:
+        max_stop_loss = min(99, int(sys.argv[sys.argv.index('--soft-max-stop-loss') + 1]))
     time_limit = 0
     if '--time-limit' in sys.argv:
         time_limit = int(sys.argv[sys.argv.index('--time-limit') + 1])
@@ -68,109 +71,130 @@ if len(sys.argv) >= 3:
     if reverse:
         print('Sorting candlesticks...')
         candlesticks.reverse()
+    'Dropping outlier candles: insufficient data'
+    stop = candlesticks_count - time_limit
+    cached_fast_sma = []
+    if volume_offset == 4:
+        if sma_fast != 0:
+            print('Pre-computing short-term VWMA...')
+            index = 0
+            while index < candlesticks_count:
+                cached_fast_sma.append(roboforex.VolumeWeightedMovingAverage(sma_fast, index, candlesticks))
+                index += 1
+        cached_slow_sma = []
+        if sma_slow != 0:
+            print('Pre-computing long-term VWMA...')
+            index = 0
+            while index < candlesticks_count:
+                cached_slow_sma.append(roboforex.VolumeWeightedMovingAverage(sma_slow, index, candlesticks))
+                index += 1
+    else:
+        if sma_fast != 0:
+            print('Pre-computing short-term SMA...')
+            index = 0
+            while index < candlesticks_count:
+                cached_fast_sma.append(roboforex.SimpleMovingAverage(sma_fast, index, candlesticks))
+                index += 1
+        cached_slow_sma = []
+        if sma_slow != 0:
+            print('Pre-computing long-term SMA...')
+            index = 0
+            while index < candlesticks_count:
+                cached_slow_sma.append(roboforex.SimpleMovingAverage(sma_slow, index, candlesticks))
+                index += 1
     donchain_sar = 0
+    donchain_indicator = []
     if '--donchain-sar' in sys.argv:
         donchain_sar = int(sys.argv[sys.argv.index('--donchain-sar') + 1])
     elif sma_slow != 0:
         donchain_sar = sma_slow / 2
-    print('Scanning for buy signals...')
-    buy_signals = []
-    if donchain_sar == 0:
-        support = candlesticks[0][low_offset]
-        resistance = candlesticks[0][high_offset]
-        uptrend = candlesticks[1][high_offset] > resistance
-        index = 0
-        while index < candlesticks_count:
-            low = candlesticks[index][low_offset]
-            high = candlesticks[index][high_offset]
-            buy = False
-            sell = False
-            if uptrend:
-                if low < support:
-                    uptrend = False
-                    resistance = support
-                    support = low
-                elif high > resistance:
-                    support = resistance
-                    resistance = high
-            else:
-                if low < support:
-                    resistance = support
-                    support = low
-                elif high > resistance:
-                    uptrend = True
-                    support = resistance
-                    resistance = high
-                    if sma_slow == 0:
-                        buy_signals.append(index)
-                    else:
-                        matype = roboforex.SimpleMovingAverage
-                        if volume_offset == 4:
-                            matype = roboforex.VolumeWeightedMovingAverage
-                        if matype(sma_fast, index, candlesticks) > matype(sma_slow, index, candlesticks):
-                            buy_signals.append(index)
-            index += 1
     else:
-        index = 1
-        while index < candlesticks_count:
-            _open = candlesticks[index][open_offset]
-            close = candlesticks[index][close_offset]
-            if close > _open:
-                resistance = roboforex.DonchainResistance(donchain_sar, index - 1, candlesticks)
-                'Donchain channel SAR trading'
-                if (_open < resistance) & (close > resistance):
-                    buy_signals.append(index)
-            index += 1
-    buy_signals_count = len(buy_signals)
-    print('found ' + str(buy_signals_count) + ' buy signals!')
-    print('finding optimal trailing stop loss level...')
-    stop_loss_ratio_profits = []
-    stop_loss_ratio = 0
+        roboforex.require(False, 'Donchain channel duration not specified')
+    print('Pre-computing donchain channel indicator...')
+    index = 0
+    while index < candlesticks_count:
+        donchain_current = roboforex.DonchainChannel(donchain_sar, index, candlesticks)
+        support = donchain_current[0]
+        resistance = donchain_current[2]
+        ssi = (resistance - support)
+        if ssi != 0:
+            ssi = int(math.floor(((candlesticks[index][3] - support) / ssi) * 100))
+        else:
+            ssi = 0
+        donchain_indicator.append((*donchain_current, ssi))
+        index += 1
+    roboforex.require(sma_fast < donchain_sar < sma_slow, "Slow SMA must be larger than fast SMA")
+    print('Emitting buy signals...')
+    optimal_stop_loss = []
     last_candlestick = candlesticks_count - 1
-    while stop_loss_ratio < soft_max_stop_loss:
-        stop_loss_ratio += 1
-        print('trying a stop loss ratio of ' + str(stop_loss_ratio) + '%')
-        inv_stop_loss = (100 - stop_loss_ratio)
-        profit = 0
-        for index in buy_signals:
-            profit += roboforex.simulateEntry(candlesticks, 65536000, stop_loss_ratio, last_candlestick, time_limit, index)
-        if stop_loss_ratio != 1:
-            if (float(profit) > max(stop_loss_ratio_profits)) & (float(stop_loss_ratio) == soft_max_stop_loss):
-                soft_max_stop_loss = min(99, soft_max_stop_loss + 1)
-        stop_loss_ratio_profits.append(profit)
-    profitability = max(stop_loss_ratio_profits)
-    optimal_stop_loss = stop_loss_ratio_profits.index(profitability) + 1
-    print('Optimal stop loss ratio is: ' + str(optimal_stop_loss) + '% (trailing stop loss)')
-    profitability = math.floor((profitability / buy_signals_count) * 100)
-    inv_stop_loss = 100 - optimal_stop_loss
-    print('Finding optimal take profit level...')
-    take_profit = 1
-    max_take_profit = profitability + optimal_stop_loss
-    take_profit_ratio_profits = []
-    max_profit_take_profit = 0
-    while take_profit < max_take_profit:
-        print('trying a take profit ratio of ' + str(take_profit) + '%')
-        profit = 0
-        for index in buy_signals:
-            profit += roboforex.simulateEntry(candlesticks, take_profit, optimal_stop_loss, last_candlestick, time_limit, index)
-        take_profit_ratio_profits.append(profit)
-        take_profit += 1
-        if max_profit_take_profit < profit:
-            max_profit_take_profit = profit
-            if take_profit == max_take_profit:
-                max_take_profit += 1
-    profitability = max(take_profit_ratio_profits)
-    optimal_take_profit = take_profit_ratio_profits.index(profitability) - 1
-    print('Optimal take profit ratio is: ' + str(optimal_take_profit) + '%')
-    print('Average profit per trade: ' + str(int(math.floor((100.0 * profitability) / buy_signals_count))) + '% in ' + str(buy_signals_count) + ' buy-sell cycles')
+    buy_signals = []
+    start = max(sma_slow, donchain_sar)
+    while len(buy_signals) < 100:
+        cache = []
+        index = start
+        while index < stop:
+            if (donchain_indicator[index][3] == len(buy_signals)) & (cached_fast_sma[index] > donchain_current[1] > cached_slow_sma[index]):
+                cache.append(index)
+            index += 1
+        buy_signals.append(cache)
+    print('Generating optimal stop loss calculation function...')
+    perc = 0
+    while perc < 100:
+        current_optimal_stop_loss = 0
+        current_max_profit = 0 - candlesticks_count
+        stop_loss = 1
+        ceiling = len(buy_signals[perc]) - 1
+        if ceiling > 2:
+            ceil2 = min(ceiling, probe_rounds)
+            tradepoints = []
+            while ceil2 != 0:
+                tradepoints.append(buy_signals[perc][random.randint(0, ceiling)])
+                ceil2 -= 1
+            while stop_loss < max_stop_loss:
+                profit = 0
+                for tradepoint in tradepoints:
+                    profit += roboforex.simulateEntry(candlesticks, 0, stop_loss, last_candlestick, time_limit, tradepoint)
+                if profit >= current_max_profit:
+                    current_max_profit = profit
+                    current_optimal_stop_loss = stop_loss
+                stop_loss += 1
+        optimal_stop_loss.append(current_optimal_stop_loss)
+        perc += 1
+    perc = 0
+    max_take_profit2 = max(optimal_stop_loss)
+    optimal_take_profit = []
+    print('Generating optimal take profit calculation function...')
+    while perc < 100:
+        current_optimal_take_profit = 0
+        current_max_profit = 0 - candlesticks_count
+        take_profit = 1
+        ceiling = len(buy_signals[perc]) - 1
+        if ceiling > 2:
+            ceil2 = min(ceiling, probe_rounds)
+            tradepoints = []
+            while ceil2 != 0:
+                tradepoints.append(buy_signals[perc][random.randint(0, ceiling)])
+                ceil2 -= 1
+            max_take_profit = max_take_profit2
+            while take_profit < max_take_profit:
+                profit = 0
+                for tradepoint in tradepoints:
+                    profit += roboforex.simulateEntry(candlesticks, take_profit, optimal_stop_loss[ceil2], last_candlestick, time_limit, tradepoint)
+                if profit >= current_max_profit:
+                    current_max_profit = profit
+                    current_optimal_take_profit = take_profit
+                    if ((take_profit + 1) == max_take_profit) & (profit > current_max_profit):
+                        max_take_profit += 1
+                take_profit += 1
+        optimal_take_profit.append(current_optimal_take_profit)
+        perc += 1
+    print('encoding trading strategy...')
+    encoded = str({'optimal_stop_loss': optimal_stop_loss, 'optimal_take_profit': optimal_take_profit})
     print('saving trading strategy...')
     handle = open(outputfile, 'w')
-    handle.write('\'Trailing stop loss allows roboforex to know when to sell the security\'\n')
-    handle.write('\'https://www.investopedia.com/terms/t/trailingstop.asp\'\n')
-    handle.write('optimal_stop_loss = ' + str(optimal_stop_loss) + '\n')
-    handle.write('\'Take profit allows roboforex to know when to sell the security\'\n')
-    handle.write('\'https://www.investopedia.com/terms/t/take-profitorder.asp\'\n')
-    handle.write('optimal_take_profit = ' + str(optimal_take_profit) + '\n')
+    handle.write(encoded)
+    handle.flush()
+    handle.close()
 else:
     print('usage: py roboforex-optimize.py [input file] [output file] [extra options]')
-    print('example: py roboforex-optimize.py Binance_BTCUSDT_1h.csv bitcoin.py --reverse')
+    print('example: py roboforex-optimize.py Binance_BTCUSDT_1h.csv bitcoin.trs --reverse')
